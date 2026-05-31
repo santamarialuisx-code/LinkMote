@@ -1,5 +1,5 @@
-import { Capacitor } from '@capacitor/core';
-import { CapacitorHttp, type HttpResponse } from '@capacitor/core';
+import { Capacitor, CapacitorHttp } from '@capacitor/core';
+import type { HttpResponse } from '@capacitor/core';
 import type { DiscoveredDevice } from '../components/DeviceDiscovery';
 
 // ─── Environment detection ────────────────────────────────────────────────────
@@ -17,32 +17,72 @@ const ROKU_ECP_PORT = 8060;
 // Android (Capacitor v7+). Using the native API directly gives us full control.
 
 async function nativeGet(ip: string, path: string, timeoutMs = 5000): Promise<string> {
-  const res: HttpResponse = await CapacitorHttp.request({
-    method: 'GET',
+  const res: HttpResponse = await CapacitorHttp.get({
     url: `http://${ip}:${ROKU_ECP_PORT}${path}`,
-    headers: { Accept: 'application/xml' },
+    headers: { Accept: 'application/xml, text/xml, */*' },
+    responseType: 'text',
     readTimeout: timeoutMs,
     connectTimeout: timeoutMs,
   });
   if (res.status < 200 || res.status >= 300) {
     throw new Error(`ECP GET ${path} failed: ${res.status}`);
   }
-  // CapacitorHttp returns data as string when the content-type is text/xml
   return typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
 }
 
-async function nativePost(ip: string, path: string): Promise<void> {
-  // Roku ECP keypress/launch endpoints want a POST with an empty body.
-  // CapacitorHttp.request() lets us send exactly that without extra headers
-  // being injected by the Android native bridge.
-  await CapacitorHttp.request({
-    method: 'POST',
-    url: `http://${ip}:${ROKU_ECP_PORT}${path}`,
-    headers: { 'Content-Length': '0' },
-    data: null,
-    readTimeout: 4000,
-    connectTimeout: 4000,
-  });
+// Sequential queue to serialize remote control commands to the device
+class CommandQueue {
+  private queue: (() => Promise<any>)[] = [];
+  private running = false;
+
+  async add<T>(task: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      this.queue.push(async () => {
+        try {
+          const res = await task();
+          resolve(res);
+        } catch (err) {
+          reject(err);
+        }
+      });
+      this.runNext();
+    });
+  }
+
+  private async runNext() {
+    if (this.running || this.queue.length === 0) return;
+    this.running = true;
+    const nextTask = this.queue.shift();
+    if (nextTask) {
+      try {
+        await nextTask();
+      } catch (e) {
+        // Error is already handled by the promise catch
+      }
+    }
+    this.running = false;
+    this.runNext();
+  }
+}
+
+const remoteQueue = new CommandQueue();
+
+// Returns { status, error } for debug visibility
+export async function nativePost(ip: string, path: string): Promise<{ status: number; error?: string }> {
+  try {
+    // We use CapacitorHttp.request with method: 'POST' and NO data/body field.
+    // This forces OkHttp on Android/iOS to send a clean HTTP POST with Content-Length: 0
+    // and no body stream/chunked encoding, which is exactly what Roku ECP expects.
+    const res: HttpResponse = await CapacitorHttp.request({
+      url: `http://${ip}:${ROKU_ECP_PORT}${path}`,
+      method: 'POST',
+      readTimeout: 4000,
+      connectTimeout: 4000,
+    });
+    return { status: res.status };
+  } catch (err: any) {
+    return { status: 0, error: err?.message ?? String(err) };
+  }
 }
 
 
@@ -101,11 +141,37 @@ async function probeRokuAt(ip: string, timeoutMs: number): Promise<DiscoveredDev
   }
 }
 
+function getPrioritizedIps(subnet: string): string[] {
+  const ips: string[] = [];
+  
+  // 1. Most common DHCP ranges: .100 - .150
+  for (let i = 100; i <= 150; i++) {
+    ips.push(`${subnet}.${i}`);
+  }
+  
+  // 2. Common low DHCP ranges: .2 - .50
+  for (let i = 2; i <= 50; i++) {
+    ips.push(`${subnet}.${i}`);
+  }
+  
+  // 3. Middle range: .51 - .99
+  for (let i = 51; i <= 99; i++) {
+    ips.push(`${subnet}.${i}`);
+  }
+  
+  // 4. High range: .151 - .254
+  for (let i = 151; i <= 254; i++) {
+    ips.push(`${subnet}.${i}`);
+  }
+  
+  return ips;
+}
+
 async function scanSubnet(subnet: string): Promise<DiscoveredDevice[]> {
   const devices: DiscoveredDevice[] = [];
-  const batchSize = 30;
-  const timeoutMs = 2500;
-  const ips = Array.from({ length: 254 }, (_, i) => `${subnet}.${i + 1}`);
+  const batchSize = 15;
+  const timeoutMs = 1200;
+  const ips = getPrioritizedIps(subnet);
 
   for (let i = 0; i < ips.length; i += batchSize) {
     const batch = ips.slice(i, i + batchSize);
@@ -129,12 +195,12 @@ export interface DeviceApp {
 
 export async function discoverDevices(): Promise<DiscoveredDevice[]> {
   if (isNative()) {
-    // Scan the two most common home subnets concurrently
-    const [a, b] = await Promise.all([
-      scanSubnet('192.168.1'),
-      scanSubnet('192.168.0'),
-    ]);
-    return [...a, ...b];
+    // Scan sequentially to prevent thread starvation and choking the network
+    const a = await scanSubnet('192.168.1');
+    if (a.length > 0) return a;
+    
+    const b = await scanSubnet('192.168.0');
+    return b;
   }
   const res = await fetch(`${API_BASE}/discover`);
   if (!res.ok) throw new Error('Failed to run discovery scan');
@@ -166,30 +232,51 @@ export async function getDeviceApps(ip: string): Promise<DeviceApp[]> {
   return res.json();
 }
 
-export async function sendDeviceKey(ip: string, rokuKey: string): Promise<void> {
-  if (isNative()) {
-    await nativePost(ip, `/keypress/${rokuKey}`);
-    return;
-  }
-  const res = await fetch(`${API_BASE}/device/${ip}/key`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key: rokuKey }),
+// Returns debug info so UI can display errors inline
+export async function sendDeviceKey(
+  ip: string,
+  rokuKey: string
+): Promise<{ ok: boolean; status: number; error?: string }> {
+  return remoteQueue.add(async () => {
+    if (isNative()) {
+      const result = await nativePost(ip, `/keypress/${rokuKey}`);
+      const ok = result.status >= 200 && result.status < 300;
+      return { ok, status: result.status, error: result.error };
+    }
+    try {
+      const res = await fetch(`${API_BASE}/device/${ip}/key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: rokuKey }),
+      });
+      return { ok: res.ok, status: res.status };
+    } catch (err: any) {
+      return { ok: false, status: 0, error: err?.message ?? String(err) };
+    }
   });
-  if (!res.ok) throw new Error(`Failed to send key "${rokuKey}" to device at ${ip}`);
 }
 
-export async function launchDeviceApp(ip: string, appId: string): Promise<void> {
-  if (isNative()) {
-    await nativePost(ip, `/launch/${appId}`);
-    return;
-  }
-  const res = await fetch(`${API_BASE}/device/${ip}/launch`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ appId }),
+export async function launchDeviceApp(
+  ip: string,
+  appId: string
+): Promise<{ ok: boolean; status: number; error?: string }> {
+  return remoteQueue.add(async () => {
+    if (isNative()) {
+      const result = await nativePost(ip, `/launch/${appId}`);
+      const ok = result.status >= 200 && result.status < 300;
+      return { ok, status: result.status, error: result.error };
+    }
+    try {
+      const res = await fetch(`${API_BASE}/device/${ip}/launch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appId }),
+      });
+      return { ok: res.ok, status: res.status };
+    } catch (err: any) {
+      return { ok: false, status: 0, error: err?.message ?? String(err) };
+    }
   });
-  if (!res.ok) throw new Error(`Failed to launch app "${appId}" on device at ${ip}`);
 }
 
 export async function connectManualDevice(ip: string): Promise<DiscoveredDevice> {

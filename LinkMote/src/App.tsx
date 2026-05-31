@@ -30,7 +30,7 @@ const STREAMING_SERVICES = [
 const ROKU_APP_IDS: Record<string, string> = {
   netflix: '12',
   prime: '13',
-  youtube: '2285',
+  youtube: '837',
   disney: '291097',
   spotify: '22297',
   twitch: '50539',
