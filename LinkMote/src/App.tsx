@@ -1,0 +1,12 @@
+import './App.css'
+
+function App() {
+  return (
+    <main className="container">
+      <h1>LinkMote</h1>
+    </main>
+  )
+}
+
+export default App
+

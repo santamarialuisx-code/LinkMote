@@ -1,0 +1,10 @@
+/* App-specific styles for LinkMote */
+.container {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 2rem;
+}
+
