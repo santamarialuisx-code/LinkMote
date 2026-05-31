@@ -17,8 +17,31 @@ async function ecpGet(ip: string, path: string): Promise<string> {
   return res.text();
 }
 
+// Special GET helper with strict timeout using AbortController for ultra-fast scanning
+async function ecpGetWithTimeout(ip: string, path: string, timeoutMs = 1200): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`http://${ip}:${ROKU_ECP_PORT}${path}`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error(`ECP GET ${path} failed: ${res.status}`);
+    return await res.text();
+  } catch (err) {
+    clearTimeout(timer);
+    throw err;
+  }
+}
+
 async function ecpPost(ip: string, path: string): Promise<void> {
-  await fetch(`http://${ip}:${ROKU_ECP_PORT}${path}`, { method: 'POST' });
+  await fetch(`http://${ip}:${ROKU_ECP_PORT}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'text/plain',
+    },
+    body: '',
+  });
 }
 
 // ─── XML parser (browser built-in DOMParser — no xml2js needed) ──────────────
@@ -30,16 +53,38 @@ function xmlText(doc: Document, tag: string): string {
   return doc.querySelector(tag)?.textContent ?? '';
 }
 
-// ─── Subnet scanner (native discovery — no UDP SSDP from mobile) ─────────────
-// Scans the two most common home subnets concurrently, probing port 8060.
-// A successful response to /query/device-info confirms it's a Roku.
-async function scanSubnet(subnet: string): Promise<DiscoveredDevice[]> {
-  const probes: Promise<DiscoveredDevice | null>[] = [];
+// Optimized native device info helper with custom strict timeout for scans
+async function getDeviceInfoDirectWithTimeout(ip: string, timeoutMs: number): Promise<DeviceInfoResponse> {
+  const xml = await ecpGetWithTimeout(ip, '/query/device-info', timeoutMs);
+  const doc = parseXml(xml);
+  const udn = xmlText(doc, 'udn');
+  const name =
+    xmlText(doc, 'user-device-name') ||
+    xmlText(doc, 'friendly-device-name') ||
+    'Roku Device';
+  const model = xmlText(doc, 'model-name') || 'Unknown Model';
+  const powerMode = xmlText(doc, 'power-mode') || 'Unknown';
+  return {
+    udn,
+    name,
+    model,
+    powerMode,
+    isPoweredOn: powerMode === 'PowerOn' || powerMode === 'DisplayOn',
+  };
+}
 
-  for (let i = 1; i <= 254; i++) {
-    const ip = `${subnet}.${i}`;
-    probes.push(
-      getDeviceInfoDirect(ip)
+// ─── Subnet scanner (native discovery — no UDP SSDP from mobile) ─────────────
+// Scans the subnet concurrently in optimized batches to prevent saturating mobile sockets.
+// Uses strict timeouts to drop empty IPs instantly and supports early return.
+async function scanSubnet(subnet: string): Promise<DiscoveredDevice[]> {
+  const devices: DiscoveredDevice[] = [];
+  const batchSize = 45; // Optimal batch size to keep network pool clean on mobile
+  const ips = Array.from({ length: 254 }, (_, i) => `${subnet}.${i + 1}`);
+
+  for (let i = 0; i < ips.length; i += batchSize) {
+    const batch = ips.slice(i, i + batchSize);
+    const probes: Promise<DiscoveredDevice | null>[] = batch.map((ip) =>
+      getDeviceInfoDirectWithTimeout(ip, 1200) // Strict 1.2s timeout per probe
         .then((info) => ({
           id: info.udn || `roku-${ip.replace(/\./g, '-')}`,
           name: info.name,
@@ -49,12 +94,18 @@ async function scanSubnet(subnet: string): Promise<DiscoveredDevice[]> {
         }))
         .catch(() => null)
     );
+
+    const results = await Promise.all(probes);
+    const found = results.filter((d): d is DiscoveredDevice => d !== null);
+    devices.push(...found);
+
+    // Early return: If we found at least one Roku, resolve instantly! (99% of homes have 1 Roku on a subnet)
+    if (devices.length > 0) {
+      break;
+    }
   }
 
-  const results = await Promise.allSettled(probes);
-  return results
-    .map((r) => (r.status === 'fulfilled' ? r.value : null))
-    .filter((d): d is DiscoveredDevice => d !== null);
+  return devices;
 }
 
 // ─── Device info (native direct) ─────────────────────────────────────────────

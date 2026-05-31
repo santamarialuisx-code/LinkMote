@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { sendDeviceKey, launchDeviceApp, isNative } from '../services/api';
+import { sendDeviceKey, launchDeviceApp } from '../services/api';
 
 // ─── Keymap (client-side copy for native mode — server does this in web mode) ─
 const ROKU_KEYMAP: Record<string, string> = {
@@ -30,9 +30,8 @@ export function useRokuRemote(activeDevice: ConnectedDevice | null) {
   const sendKey = useCallback(
     async (key: string) => {
       if (!activeDevice) return;
-      // In native mode, translate the UI key to an ECP key here (no server-side keymap).
-      // In web/proxy mode, the server handles the translation.
-      const rokuKey = isNative() ? (ROKU_KEYMAP[key.toLowerCase()] ?? key) : key;
+      // Translate the UI key to the Roku ECP key (works for both native direct and web/proxy mode)
+      const rokuKey = ROKU_KEYMAP[key.toLowerCase()] ?? key;
       try {
         await sendDeviceKey(activeDevice.ip, rokuKey);
       } catch (err) {
