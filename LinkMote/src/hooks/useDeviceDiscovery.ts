@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { DiscoveredDevice } from '../components/DeviceDiscovery';
-import { discoverDevices, connectManualDevice } from '../services/api';
+import { discoverDevices, connectManualDevice, isNative } from '../services/api';
 
 export function useDeviceDiscovery() {
   const [devices, setDevices] = useState<DiscoveredDevice[]>([]);
@@ -24,7 +24,6 @@ export function useDeviceDiscovery() {
     try {
       const device = await connectManualDevice(ip);
       setDevices((prev) => {
-        // Remove if device already existed with that IP
         const filtered = prev.filter((d) => d.ip !== ip);
         return [...filtered, device];
       });
@@ -36,12 +35,17 @@ export function useDeviceDiscovery() {
     }
   }, []);
 
-  // Connect WebSocket to stay in sync with proxy events
+  // WebSocket — only in web/proxy mode. Native mode has no server proxy running.
   useEffect(() => {
+    if (isNative()) {
+      console.log('[ws-client] Skipping WebSocket — running in native mobile mode.');
+      return;
+    }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
     const wsUrl = `${protocol}//${host}/ws`;
-    
+
     let active = true;
     let timer: any = null;
 
@@ -82,22 +86,15 @@ export function useDeviceDiscovery() {
       active = false;
       if (timer) clearTimeout(timer);
       if (wsRef.current) {
-        try {
-          wsRef.current.close();
-        } catch (e) {}
+        try { wsRef.current.close(); } catch (e) {}
       }
     };
   }, []);
 
-  // Trigger scan on mount
+  // Auto-scan on mount
   useEffect(() => {
     startScan();
   }, [startScan]);
 
-  return {
-    devices,
-    scanStatus,
-    rescan: startScan,
-    connectManual,
-  };
+  return { devices, scanStatus, rescan: startScan, connectManual };
 }

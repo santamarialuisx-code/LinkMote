@@ -1,5 +1,21 @@
 import { useCallback } from 'react';
-import { sendDeviceKey, launchDeviceApp } from '../services/api';
+import { sendDeviceKey, launchDeviceApp, isNative } from '../services/api';
+
+// ─── Keymap (client-side copy for native mode — server does this in web mode) ─
+const ROKU_KEYMAP: Record<string, string> = {
+  up: 'Up',
+  down: 'Down',
+  left: 'Left',
+  right: 'Right',
+  ok: 'Select',
+  back: 'Back',
+  home: 'Home',
+  options: 'Info',
+  'vol-up': 'VolumeUp',
+  'vol-down': 'VolumeDown',
+  mute: 'VolumeMute',
+  power: 'Power',
+};
 
 export interface ConnectedDevice {
   id: string;
@@ -14,8 +30,11 @@ export function useRokuRemote(activeDevice: ConnectedDevice | null) {
   const sendKey = useCallback(
     async (key: string) => {
       if (!activeDevice) return;
+      // In native mode, translate the UI key to an ECP key here (no server-side keymap).
+      // In web/proxy mode, the server handles the translation.
+      const rokuKey = isNative() ? (ROKU_KEYMAP[key.toLowerCase()] ?? key) : key;
       try {
-        await sendDeviceKey(activeDevice.ip, key);
+        await sendDeviceKey(activeDevice.ip, rokuKey);
       } catch (err) {
         console.error('[remote-hook] Failed to send key:', err);
       }
@@ -42,31 +61,17 @@ export function useRokuRemote(activeDevice: ConnectedDevice | null) {
   const adjustVolumeDelta = useCallback(
     async (prev: number, curr: number) => {
       if (!activeDevice) return;
-      
       const diff = curr - prev;
       if (diff === 0) return;
-      
-      // Calculate how many presses to send. Typically we map 5 points on the slider to 1 ECP keypress
       const steps = Math.max(1, Math.round(Math.abs(diff) / 5));
       const key = diff > 0 ? 'vol-up' : 'vol-down';
-      
-      console.log(`[remote-hook] Volume delta: ${diff}. Sending ${steps} keypresses of "${key}".`);
-      
       for (let i = 0; i < steps; i++) {
         await sendKey(key);
-        // Small delay to ensure Roku receives and processes all keypresses
-        if (i < steps - 1) {
-          await new Promise((resolve) => setTimeout(resolve, 80));
-        }
+        if (i < steps - 1) await new Promise((r) => setTimeout(r, 80));
       }
     },
     [activeDevice, sendKey]
   );
 
-  return {
-    sendKey,
-    launchApp,
-    togglePower,
-    adjustVolumeDelta,
-  };
+  return { sendKey, launchApp, togglePower, adjustVolumeDelta };
 }
