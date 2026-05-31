@@ -11,7 +11,7 @@ export interface DiscoveredDevice {
   protocol: DiscoveryProtocol;
 }
 
-type ScanStatus = 'scanning' | 'found' | 'empty' | 'error';
+type ScanStatus = 'idle' | 'scanning' | 'found' | 'empty' | 'error';
 
 interface DeviceDiscoveryProps {
   isOpen: boolean;
@@ -20,6 +20,8 @@ interface DeviceDiscoveryProps {
   /** Injected by App once real discovery is wired */
   scanStatus?: ScanStatus;
   devices?: DiscoveredDevice[];
+  onRescan?: () => void;
+  onManualConnect?: (ip: string) => Promise<DiscoveredDevice>;
 }
 
 const DEVICE_ICONS: Record<DeviceType, React.ReactNode> = {
@@ -74,19 +76,19 @@ const DEVICE_TYPE_LABEL: Record<DeviceType, string> = {
   unknown: 'Unknown device',
 };
 
-// Stub devices for UI preview — will be replaced by real discovery results
-const STUB_DEVICES: DiscoveredDevice[] = [
-  { id: 'dev-1', name: 'Living Room TV', type: 'roku', ip: '192.168.1.101', protocol: 'dial' },
-  { id: 'dev-2', name: 'Bedroom Shield', type: 'androidtv', ip: '192.168.1.105', protocol: 'mdns' },
-];
-
 export const DeviceDiscovery: React.FC<DeviceDiscoveryProps> = ({
   isOpen,
   onClose,
   onDeviceSelect,
   scanStatus = 'scanning',
-  devices = STUB_DEVICES,
+  devices = [],
+  onRescan,
+  onManualConnect,
 }) => {
+  const [manualIp, setManualIp] = React.useState('');
+  const [isConnecting, setIsConnecting] = React.useState(false);
+  const [errorMsg, setErrorMsg] = React.useState('');
+
   // Trap body scroll while sheet is open
   useEffect(() => {
     if (isOpen) {
@@ -96,6 +98,34 @@ export const DeviceDiscovery: React.FC<DeviceDiscoveryProps> = ({
     }
     return () => { document.body.style.overflow = ''; };
   }, [isOpen]);
+
+  const handleManualSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const targetIp = manualIp.trim();
+    if (!targetIp) return;
+
+    // Basic IP validation
+    const ipRegex = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/;
+    if (!ipRegex.test(targetIp)) {
+      setErrorMsg('Invalid IP address format (e.g. 192.168.1.50)');
+      return;
+    }
+
+    setIsConnecting(true);
+    setErrorMsg('');
+
+    try {
+      if (onManualConnect) {
+        const device = await onManualConnect(targetIp);
+        onDeviceSelect(device);
+        setManualIp('');
+      }
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to connect. Verify IP and network.');
+    } finally {
+      setIsConnecting(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -109,7 +139,7 @@ export const DeviceDiscovery: React.FC<DeviceDiscoveryProps> = ({
         <div className="sheet-header">
           <div className="sheet-title-group">
             <h2 className="sheet-title">Discover devices</h2>
-            <p className="sheet-subtitle">Scanning via mDNS · SSDP · DIAL</p>
+            <p className="sheet-subtitle">Scanning via SSDP (Roku ECP)</p>
           </div>
           <button
             type="button"
@@ -127,6 +157,12 @@ export const DeviceDiscovery: React.FC<DeviceDiscoveryProps> = ({
 
         {/* Scan status bar */}
         <div className={`scan-status-bar status-${scanStatus}`}>
+          {scanStatus === 'idle' && (
+            <>
+              <div className="status-dot dot-gray" aria-hidden="true" />
+              <span>Ready to scan local network</span>
+            </>
+          )}
           {scanStatus === 'scanning' && (
             <>
               <div className="scan-spinner" aria-hidden="true" />
@@ -148,7 +184,7 @@ export const DeviceDiscovery: React.FC<DeviceDiscoveryProps> = ({
           {scanStatus === 'error' && (
             <>
               <div className="status-dot dot-red" aria-hidden="true" />
-              <span>Scan failed — check network permissions</span>
+              <span>Scan failed — verify LAN connectivity</span>
             </>
           )}
         </div>
@@ -159,7 +195,7 @@ export const DeviceDiscovery: React.FC<DeviceDiscoveryProps> = ({
             <div className="device-list-empty">
               <p>No compatible devices found.</p>
               <p className="device-list-empty-hint">
-                Ensure the device is powered on and on the same Wi-Fi network.
+                Ensure your Roku is powered on, connected to the same Wi-Fi network, and that "Control by mobile apps" is enabled.
               </p>
             </div>
           ) : (
@@ -192,6 +228,32 @@ export const DeviceDiscovery: React.FC<DeviceDiscoveryProps> = ({
           )}
         </div>
 
+        {/* Manual connect form */}
+        <form className="manual-connect-form" onSubmit={handleManualSubmit}>
+          <label htmlFor="manual-ip-input" className="manual-connect-title">
+            Connect to IP Manually
+          </label>
+          <div className="manual-connect-input-group">
+            <input
+              id="manual-ip-input"
+              type="text"
+              placeholder="e.g. 192.168.1.50"
+              value={manualIp}
+              onChange={(e) => setManualIp(e.target.value)}
+              className="manual-connect-input"
+              disabled={isConnecting}
+            />
+            <button
+              type="submit"
+              className="manual-connect-btn"
+              disabled={isConnecting || !manualIp}
+            >
+              {isConnecting ? 'Connecting…' : 'Connect'}
+            </button>
+          </div>
+          {errorMsg && <p className="manual-connect-error">{errorMsg}</p>}
+        </form>
+
         {/* Rescan button */}
         <div className="sheet-footer">
           <button
@@ -199,6 +261,7 @@ export const DeviceDiscovery: React.FC<DeviceDiscoveryProps> = ({
             id="btn-rescan"
             className="rescan-btn"
             disabled={scanStatus === 'scanning'}
+            onClick={onRescan}
           >
             {scanStatus === 'scanning' ? 'Scanning…' : 'Scan again'}
           </button>

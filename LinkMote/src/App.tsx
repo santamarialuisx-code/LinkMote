@@ -5,18 +5,16 @@ import { VolumeSlider } from './components/VolumeSlider'
 import { GesturePad } from './components/GesturePad'
 import { BottomNav } from './components/BottomNav'
 import { EmptyState } from './components/EmptyState'
-import { DeviceDiscovery, type DiscoveredDevice } from './components/DeviceDiscovery'
+import { DeviceDiscovery } from './components/DeviceDiscovery'
+import { useDeviceDiscovery } from './hooks/useDeviceDiscovery'
+import { useRokuRemote, type ConnectedDevice } from './hooks/useRokuRemote'
 import './App.css'
 
 // ─── Domain types ────────────────────────────────────────────────────────────
 type Tab = 'remote' | 'channels' | 'settings';
 type ControlMode = 'buttons' | 'gestures';
 
-interface ConnectedDevice extends DiscoveredDevice {
-  isPoweredOn: boolean;
-}
-
-// ─── Streaming services catalog ───────────────────────────────────────────────
+// ─── Streaming services catalog & Roku Channel mapping ───────────────────────
 const STREAMING_SERVICES = [
   { id: 'netflix',   label: 'Netflix',     color: '#E50914', abbr: 'N' },
   { id: 'prime',     label: 'Prime Video', color: '#00A8E0', abbr: 'P' },
@@ -29,6 +27,18 @@ const STREAMING_SERVICES = [
   { id: 'plex',      label: 'Plex',        color: '#E5A00D', abbr: 'Px' },
 ] as const;
 
+const ROKU_APP_IDS: Record<string, string> = {
+  netflix: '12',
+  prime: '13',
+  youtube: '2285',
+  disney: '291097',
+  spotify: '22297',
+  twitch: '50539',
+  hbo: 'max',       // Fallback name search or default
+  hulu: '2285',      // Fallback
+  plex: '13535',     // Plex Roku App ID
+};
+
 // ─── App ─────────────────────────────────────────────────────────────────────
 function App() {
   const [activeTab, setActiveTab]         = useState<Tab>('remote');
@@ -36,6 +46,10 @@ function App() {
   const [volume, setVolume]               = useState(50);
   const [activeDevice, setActiveDevice]   = useState<ConnectedDevice | null>(null);
   const [isDiscoveryOpen, setDiscoveryOpen] = useState(false);
+
+  // Wire real device discovery and remote ECP hooks
+  const { devices, scanStatus, rescan, connectManual } = useDeviceDiscovery();
+  const remote = useRokuRemote(activeDevice);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   const vibrate = (pattern: number | number[]) => {
@@ -46,34 +60,35 @@ function App() {
 
   const handleKeyPress = (key: string) => {
     vibrate(15);
-    // TODO: dispatch key to active device driver
+    remote.sendKey(key);
     console.log(`[remote] key=${key} device=${activeDevice?.id}`);
   };
 
   const handleSecondaryPress = (action: string) => {
     vibrate(15);
-    // TODO: dispatch action to active device driver
+    remote.sendKey(action);
     console.log(`[remote] action=${action} device=${activeDevice?.id}`);
   };
 
   const handleVolumeChange = (vol: number) => {
+    const prevVol = volume;
     setVolume(vol);
-    // TODO: dispatch volume command to active device driver
-    console.log(`[remote] volume=${vol} device=${activeDevice?.id}`);
+    remote.adjustVolumeDelta(prevVol, vol);
+    console.log(`[remote] volume change: prev=${prevVol} next=${vol} device=${activeDevice?.id}`);
   };
 
   const handleLaunchService = (serviceId: string) => {
     vibrate(20);
-    // TODO: dispatch launch command to active device driver
-    console.log(`[channels] launch=${serviceId} device=${activeDevice?.id}`);
+    const appId = ROKU_APP_IDS[serviceId] || serviceId;
+    remote.launchApp(appId);
+    console.log(`[channels] launch=${serviceId} (appId=${appId}) device=${activeDevice?.id}`);
   };
 
-  const handleDeviceSelect = (device: DiscoveredDevice) => {
+  const handleDeviceSelect = (device: any) => {
     vibrate([15, 10, 15]);
     setActiveDevice({ ...device, isPoweredOn: true });
     setDiscoveryOpen(false);
     setActiveTab('remote');
-    // TODO: initialize driver for device.type + device.protocol
     console.log(`[discovery] connected to`, device);
   };
 
@@ -82,14 +97,13 @@ function App() {
     vibrate(20);
     const next = !activeDevice.isPoweredOn;
     setActiveDevice({ ...activeDevice, isPoweredOn: next });
-    // TODO: send power command via driver
-    console.log(`[remote] power=${next} device=${activeDevice.id}`);
+    remote.togglePower();
+    console.log(`[remote] power toggled device=${activeDevice.id}`);
   };
 
   const handleDisconnect = () => {
     vibrate([20, 10]);
     setActiveDevice(null);
-    // TODO: teardown driver connection
     console.log('[settings] disconnected');
   };
 
@@ -301,8 +315,10 @@ function App() {
         isOpen={isDiscoveryOpen}
         onClose={() => setDiscoveryOpen(false)}
         onDeviceSelect={handleDeviceSelect}
-        scanStatus="scanning"
-        // TODO: pass real devices array from discovery hook
+        scanStatus={scanStatus}
+        devices={devices}
+        onRescan={rescan}
+        onManualConnect={connectManual}
       />
     </div>
   );

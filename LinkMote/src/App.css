@@ -926,3 +926,68 @@
 
 /* ─── Global tactile opt-outs ─────────────────────────────────────────────── */
 button { touch-action: manipulation; }
+
+/* Manual connection form in bottom sheet */
+.manual-connect-form {
+  padding: 0.85rem 1.25rem;
+  border-top: 1px solid var(--c-border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.manual-connect-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--c-text-3);
+  margin: 0;
+}
+.manual-connect-input-group {
+  display: flex;
+  gap: 0.5rem;
+}
+.manual-connect-input {
+  flex: 1;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border-2);
+  border-radius: var(--r-md);
+  padding: 0.65rem 0.85rem;
+  color: var(--c-text);
+  font-size: 0.88rem;
+  font-family: inherit;
+  transition: border-color 0.12s;
+}
+.manual-connect-input:focus {
+  border-color: var(--c-accent);
+  outline: none;
+}
+.manual-connect-btn {
+  background: var(--c-accent);
+  border: 1px solid var(--c-accent);
+  border-radius: var(--r-md);
+  color: #fff;
+  padding: 0 1rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.12s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: manipulation;
+}
+.manual-connect-btn:active {
+  opacity: 0.85;
+}
+.manual-connect-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.manual-connect-error {
+  font-size: 0.72rem;
+  color: var(--c-red);
+  margin-top: -0.2rem;
+  font-weight: 500;
+}
+
